@@ -5,12 +5,14 @@ import path from "node:path";
 import type { ApprovalAnswer, ApprovalRequest, Prompter, Question, RunOptions, RunResult } from "./agent.ts";
 import { config } from "./config.ts";
 import { mdToWhatsApp, truncate } from "./format.ts";
-import type { InboundMessage } from "./whatsapp.ts";
+import type { InboundMessage, MessageRef } from "./whatsapp.ts";
 
 /** What a Conversation needs from the transport (WhatsApp, or a fake in tests). */
 export interface Sender {
   send(jid: string, text: string): Promise<void>;
   setTyping(jid: string, on: boolean): Promise<void>;
+  /** React to a message with an emoji ("" removes the reaction); the chat comes from the key. */
+  react(key: MessageRef, emoji: string): Promise<void>;
 }
 
 /** What a Conversation needs from the agent (Agent, or a fake in tests). */
@@ -63,14 +65,16 @@ export const HELP = `Commands:
 /clearqueue – drop queued instructions
 /verbose on|off – live feed of every tool call and result (default on)
 /progress on|off – forward my narration between tool calls (default on)
+/heartbeat <seconds>|off – "still working" note when the chat is quiet that long (default 60)
 
 Anything else is an instruction. While a task runs, new messages queue up unless I asked you something, in which case your next message is the answer.
+Your message gets ⏳ when I pick it up and ✅ (or ⚠️) when the reply is complete; the reply itself ends with a "done · N turns · Ns" line.
 Approvals: reply *yes* / *no* / *always*, or tell me what to do instead.
 Files: send a document/photo with a caption and I get both. Without a caption I save it and attach it to your next message.`;
 
 export class Conversation {
   private pending: Pending | null = null;
-  private queue: { text: string; opts: RunOptions }[] = [];
+  private queue: { text: string; opts: RunOptions; ref?: MessageRef }[] = [];
   private heldAttachments: string[] = [];
   private approvalCounter = 0;
   private draining = false;
@@ -111,7 +115,7 @@ export class Conversation {
     if (m.fromMe === false) {
       // Read-only: they get answers, never changes (enforced in Agent via hook + canUseTool).
       const who = text.match(/^\[Message from ([^\]]+)\]/)?.[1] ?? "a group member";
-      this.submit(text, { readOnly: true, requester: who });
+      this.submit(text, { readOnly: true, requester: who }, m.key);
       return;
     }
 
@@ -126,13 +130,18 @@ export class Conversation {
     }
 
     if (text.startsWith("/")) { await this.command(text); return; }
-    this.submit(text);
+    this.submit(text, {}, m.key);
   }
 
-  /** Queue an instruction and start draining if idle. */
-  submit(instruction: string, opts: RunOptions = {}): void {
-    this.queue.push({ text: instruction, opts });
+  /**
+   * Queue an instruction and start draining if idle. `ref` is the WhatsApp
+   * message that carried it: it gets ⏳ when the run starts and ✅/⚠️ when it
+   * ends, which is the one signal WhatsApp shows the owner about their own chat.
+   */
+  submit(instruction: string, opts: RunOptions = {}, ref?: MessageRef): void {
+    this.queue.push({ text: instruction, opts, ref });
     if (this.agent.running || this.draining) {
+      if (ref) void this.wa.react(ref, "🕒");
       void this.say(`⏳ Queued (${this.queue.length} waiting). Send /cancel to stop the current task.`);
       return;
     }
@@ -155,6 +164,14 @@ export class Conversation {
       case "clearqueue": { const n = this.queue.length; this.queue = []; return this.say(`Dropped ${n} queued instruction(s).`); }
       case "verbose": { config.verboseTools = arg !== "off"; return this.say(`Live tool feed ${config.verboseTools ? "on" : "off"}.`); }
       case "progress": { config.progressUpdates = arg !== "off"; return this.say(`Narration ${config.progressUpdates ? "on" : "off"}.`); }
+      case "heartbeat": {
+        if (arg === "off" || arg === "0") { config.heartbeatSec = 0; return this.say("Heartbeat off."); }
+        const n = parseInt(arg, 10);
+        if (!arg) return this.say(config.heartbeatSec > 0 ? `Heartbeat every ${config.heartbeatSec}s of silence.` : "Heartbeat off.");
+        if (isNaN(n) || n < 10) return this.say("Usage: /heartbeat <seconds ≥ 10> | off");
+        config.heartbeatSec = n;
+        return this.say(`Heartbeat: "still working" note after ${n}s of silence.`);
+      }
       case "session": return this.say(`Session: ${this.agent.sessionId ?? "(none yet)"}`);
       default: {
         if (this.events.onCommand && (await this.events.onCommand(cmd.toLowerCase(), rest.join(" ")))) return;
@@ -189,26 +206,29 @@ export class Conversation {
     try {
       while (this.queue.length) {
         const item = this.queue.shift()!;
-        await this.runOne(item.text, item.opts);
+        await this.runOne(item.text, item.opts, item.ref);
       }
     } finally {
       this.draining = false;
     }
   }
 
-  private async runOne(instruction: string, opts: RunOptions = {}): Promise<void> {
+  private async runOne(instruction: string, opts: RunOptions = {}, ref?: MessageRef): Promise<void> {
     if (this.gate.running >= this.gate.limit) {
       await this.say(`⏳ Waiting for a free slot (${this.gate.running} task${this.gate.running === 1 ? "" : "s"} running, limit ${this.gate.limit}).`);
     }
     const release = await this.gate.acquire();
-    await this.wa.setTyping(this.jid, true);
+    if (ref) void this.wa.react(ref, "⏳");
+    const stopLiveness = this.startLiveness();
     const prompter = this.makePrompter();
+    let mark = "⚠️";
     try {
       this.events.onStart?.(instruction);
       const r = await this.agent.run(instruction, prompter, opts);
       const mode = opts.readOnly ? `🔎 read-only reply to ${opts.requester ?? "group member"} · ` : "";
       const footer = `${mode}${r.ok ? "✅ done" : "⚠️ stopped"} · ${r.turns} turns · ${Math.round(r.durationMs / 1000)}s`;
       const body = r.text ? mdToWhatsApp(r.text) : "";
+      if (r.ok) mark = "✅";
       await this.say(body ? `${body}\n\n_${footer}_` : `_${footer}_`);
       this.events.onFinish?.(r);
     } catch (e) {
@@ -217,8 +237,37 @@ export class Conversation {
       this.events.onFinish?.({ text: msg, ok: false, turns: 0, costUsd: 0, durationMs: 0 });
     } finally {
       release();
-      await this.wa.setTyping(this.jid, false);
+      await stopLiveness();
+      if (ref) void this.wa.react(ref, mark);
     }
+  }
+
+  /**
+   * Liveness signals while a run is active:
+   * - "typing…" for the other members of the chat, re-sent every 8 s because
+   *   WhatsApp drops it after ~10 s (and it is never shown to the owner);
+   * - a "⏳ still working" note for the owner when nothing has been posted for
+   *   `config.heartbeatSec` seconds, so silence is not mistaken for a dead link.
+   * Both pause while we are waiting for the user to answer a prompt.
+   * Returns a function that stops them and clears the typing state.
+   */
+  private startLiveness(): () => Promise<void> {
+    const startedAt = Date.now();
+    void this.wa.setTyping(this.jid, true);
+    const typing = setInterval(() => { void this.wa.setTyping(this.jid, !this.pending); }, 8_000).unref();
+    const tickMs = Math.max(20, Math.min(10_000, (config.heartbeatSec || 60) * 250));
+    const beat = setInterval(() => {
+      if (config.heartbeatSec <= 0 || this.pending || this.activityBuffer.length) return;
+      if (Date.now() - this.lastSentAt < config.heartbeatSec * 1000) return;
+      const mins = Math.round((Date.now() - startedAt) / 60000);
+      const since = this.lastActivity ? `\nLast step: ${truncate(this.lastActivity.replace(/^\s*🔧\s*/, ""), 140)}` : "";
+      void this.say(`⏳ Still working… ${mins} min so far.${since}`);
+    }, tickMs).unref();
+    return async () => {
+      clearInterval(typing);
+      clearInterval(beat);
+      await this.wa.setTyping(this.jid, false);
+    };
   }
 
   private waitForReply(promptText: string, signal: AbortSignal): Promise<string> {
@@ -284,8 +333,13 @@ export class Conversation {
   private sendChain: Promise<void> = Promise.resolve();
   private activityBuffer: string[] = [];
   private activityTimer: NodeJS.Timeout | null = null;
+  /** When we last posted anything to this chat (heartbeat baseline). */
+  private lastSentAt = Date.now();
+  /** Most recent tool-call line, quoted in heartbeat notes. */
+  private lastActivity = "";
 
   private pushActivity(line: string): void {
+    if (/🔧/.test(line)) this.lastActivity = line.trim();
     this.activityBuffer.push(line);
     if (this.activityBuffer.join("\n").length > config.maxMessageChars * 0.8) { void this.flushActivity(); return; }
     if (!this.activityTimer) this.activityTimer = setTimeout(() => void this.flushActivity(), 2500);
@@ -301,7 +355,7 @@ export class Conversation {
 
   private enqueue(text: string): Promise<void> {
     const p = this.sendChain.then(async () => {
-      try { await this.wa.send(this.jid, text); }
+      try { await this.wa.send(this.jid, text); this.lastSentAt = Date.now(); }
       catch (e) { console.error("send failed:", (e as Error).message); }
     });
     this.sendChain = p;

@@ -20,11 +20,16 @@ import qrcode from "qrcode-terminal";
 import { config } from "./config.ts";
 import { attachmentFileName, splitMessage } from "./format.ts";
 
+/** Enough of a WhatsApp message key to react to it later. */
+export type MessageRef = { remoteJid: string; id: string; fromMe: boolean; participant?: string };
+
 /** `attachments` are absolute paths of files saved under `<workspace>/inbox/`. */
 export type InboundMessage = {
   chatJid: string; text: string; id: string; timestamp: number; attachments: string[];
   /** false when another member of a task group wrote it (see config.groupMembers); absent/true = the owner. */
   fromMe?: boolean;
+  /** Raw key of the WhatsApp message, for reactions (⏳ picked up, ✅ done). */
+  key?: MessageRef;
 };
 
 type MediaMeta = { fileName?: string | null; mimetype?: string | null; fileLength?: number | Long | null };
@@ -131,7 +136,8 @@ export class WhatsApp {
     // A group member's message is tagged so the agent knows who is talking.
     const who = m.pushName || (m.key.participant ? jidNormalizedUser(m.key.participant).split("@")[0] : "group member");
     const tagged = fromMe ? text : `[Message from ${who}]\n${text}`;
-    const base = { chatJid, id, timestamp: ts, fromMe };
+    const key: MessageRef = { remoteJid: m.key.remoteJid, id, fromMe, participant: m.key.participant ?? undefined };
+    const base = { chatJid, id, timestamp: ts, fromMe, key };
     if (!media) { this.onMessage({ ...base, text: tagged, attachments: [] }); return; }
     void this.saveAttachment(m, media, ts).then((file) => {
       if (file) { this.onMessage({ ...base, text: tagged, attachments: [file] }); return; }
@@ -187,8 +193,22 @@ export class WhatsApp {
     await this.sock.groupUpdateSubject(jid, subject.slice(0, 100));
   }
 
+  /**
+   * "typing…" for the other members of the chat. WhatsApp shows this to other
+   * people only, never to the account that is typing, and it expires after
+   * ~10 s, so the Conversation re-sends it while a run is active.
+   */
   async setTyping(chatJid: string, on: boolean): Promise<void> {
     try { await this.sock?.sendPresenceUpdate(on ? "composing" : "paused", chatJid); } catch { /* ignore */ }
+  }
+
+  /** React to a message in whichever chat it lives (empty emoji removes the reaction). Visible to the owner too. */
+  async react(key: MessageRef, emoji: string): Promise<void> {
+    if (!this.sock) return;
+    try {
+      const res = await this.sock.sendMessage(key.remoteJid, { react: { text: emoji, key } });
+      if (res?.key?.id) this.sentIds.add(res.key.id);
+    } catch (e) { console.error("react failed:", (e as Error).message); }
   }
 
   stop(): void {

@@ -101,10 +101,17 @@ for a slot and say so in their group.
    - ↳ one line per tool result (first line, error marker, `+N lines`).
    Tool lines are buffered and sent as one message every ~2.5 s (or when the
    buffer nears the WhatsApp size limit).
+   Liveness: the instruction message is reacted ⏳ when the run starts (🕒 if
+   it had to queue), a "typing…" presence is re-sent every 8 s for the other
+   members of the chat (WhatsApp never shows it to the typing account itself,
+   i.e. you), and if nothing has been posted for `CLAUDE_OFFICE_HEARTBEAT_SEC`
+   (default 60 s) a `⏳ Still working… N min so far` note quotes the last tool
+   step. All of it pauses while Claude waits for your answer.
 6. **When Claude finishes**, the final text is converted from Markdown and
-   posted with a footer: `✅ done · 14 turns · 92s` (or `⚠️ stopped`). The
-   group is renamed `✅ #id · title` or `⚠️ #id · title`, so your chat list is
-   a task board. The session id is stored in `tasks.json`.
+   posted with a footer: `✅ done · 14 turns · 92s` (or `⚠️ stopped`), and the
+   instruction message's reaction flips to ✅ / ⚠️ (in the launcher chat too,
+   so the self-chat doubles as a task board). The group is renamed
+   `✅ #id · title` or `⚠️ #id · title`. The session id is stored in `tasks.json`.
 
 ### 2.2 You type inside a task group
 
@@ -214,7 +221,8 @@ Several tasks can run at once (default 3); the rest wait.
 | 💬 | Claude's narration (what it is about to do / found). |
 | 🔧 | A tool call: `Bash · Check pods in niq · kubectl get pods -n niq`. |
 | ↳ | The result of the call above, one line. `❌` marks an error. |
-| ⏳ | Queued, or waiting for a free slot. |
+| ⏳ | Queued, waiting for a free slot, or a "Still working… N min" heartbeat after a quiet stretch. |
+| ⏳ / 🕒 / ✅ / ⚠️ reaction | On your own message: picked up / queued / finished / stopped. |
 | 🔐 | An approval request (see §5). |
 | ❓ | A question from Claude (see §5). |
 | 🔎 | A read-only reply to a colleague (see §7). |
@@ -243,6 +251,7 @@ In **any chat** (self-chat or a task group):
 | `/queue`, `/clearqueue` | Show or drop queued instructions. |
 | `/verbose on\|off` | Live tool feed. |
 | `/progress on\|off` | Narration between tool calls. |
+| `/heartbeat <seconds>\|off` | "Still working" note after that much silence (default 60 s; `/heartbeat` alone shows the current value). |
 | `/session` | Print the current session id. |
 
 ### 4.4 Follow-ups
@@ -511,5 +520,5 @@ Where to change things:
   `workspace/CLAUDE.md` (yours) or `SYSTEM_APPEND` in `src/agent.ts`
   (everyone's).
 - Another chat transport → implement the `Transport` interface from
-  `src/bridge.ts` (`send`, `setTyping`, `createGroup`, `renameGroup`,
+  `src/bridge.ts` (`send`, `setTyping`, `react`, `createGroup`, `renameGroup`,
   `selfChatJid`) and feed `InboundMessage`s to `Bridge.handle`.

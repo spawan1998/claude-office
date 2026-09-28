@@ -15,7 +15,9 @@ class FakeWA implements Transport {
   groups: { jid: string; subject: string }[] = [];
   selfChatJid = SELF;
   async send(jid: string, text: string) { this.sent.push({ jid, text }); }
+  reactions: { id: string; emoji: string }[] = [];
   async setTyping() { /* noop */ }
+  async react(key: { id: string }, emoji: string) { this.reactions.push({ id: key.id, emoji }); }
   async createGroup(subject: string) { const jid = `g${this.groups.length + 1}@g.us`; this.groups.push({ jid, subject }); return jid; }
   async renameGroup(jid: string, subject: string) { const g = this.groups.find((x) => x.jid === jid); if (g) g.subject = subject; }
   texts(jid: string) { return this.sent.filter((s) => s.jid === jid).map((s) => s.text); }
@@ -45,7 +47,10 @@ class FakeAgent implements AgentLike {
 
 const ok = (text: string): RunResult => ({ text, ok: true, turns: 1, costUsd: 0, durationMs: 10 });
 const tick = () => new Promise((r) => setTimeout(r, 5));
-const msg = (chatJid: string, text: string) => ({ chatJid, text, id: Math.random().toString(), timestamp: 0, attachments: [] as string[] });
+const msg = (chatJid: string, text: string) => {
+  const id = Math.random().toString();
+  return { chatJid, text, id, timestamp: 0, attachments: [] as string[], key: { remoteJid: chatJid, id, fromMe: true } };
+};
 
 function setup(limit = 3) {
   const wa = new FakeWA();
@@ -179,6 +184,46 @@ test("task records survive a restart and a message in an old group resumes its s
   await tick();
   assert.equal(agents2[0].sessionId, sid, "resumed with the stored session id");
   FakeAgent.pending.shift()!.resolve(ok("ok"));
+});
+
+test("the instruction message is reacted ⏳ on pickup and ✅/⚠️ when the run ends", async () => {
+  const { wa, bridge } = setup();
+  const m1 = msg(SELF, "first");
+  await bridge.handle(m1);
+  await tick();
+  assert.deepEqual(wa.reactions, [{ id: m1.id, emoji: "⏳" }]);
+  FakeAgent.pending.shift()!.resolve(ok("done"));
+  await tick();
+  assert.deepEqual(wa.reactions.at(-1), { id: m1.id, emoji: "✅" });
+  // a follow-up in the group: ⏳ then ⚠️ on failure
+  const m2 = msg("g1@g.us", "and now");
+  await bridge.handle(m2);
+  await tick();
+  assert.deepEqual(wa.reactions.at(-1), { id: m2.id, emoji: "⏳" });
+  FakeAgent.pending.shift()!.resolve({ ...ok("boom"), ok: false });
+  await tick();
+  assert.deepEqual(wa.reactions.at(-1), { id: m2.id, emoji: "⚠️" });
+});
+
+test("heartbeat posts a 'still working' note when the chat has been quiet", async () => {
+  const { wa, bridge } = setup();
+  const prev = config.heartbeatSec;
+  config.heartbeatSec = 0.1; // tick every 25 ms, note after 100 ms of silence
+  try {
+    await bridge.handle(msg(SELF, "/here slow task"));
+    await tick();
+    assert.ok(!wa.texts(SELF).some((t) => /Still working/.test(t)), "no note right away");
+    await new Promise((r) => setTimeout(r, 200));
+    const notes = wa.texts(SELF).filter((t) => /Still working/.test(t));
+    assert.ok(notes.length >= 1, "note after silence");
+    FakeAgent.pending.shift()!.resolve(ok("finished"));
+    await tick();
+    const after = wa.texts(SELF).filter((t) => /Still working/.test(t)).length;
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(wa.texts(SELF).filter((t) => /Still working/.test(t)).length, after, "stops after the run");
+  } finally {
+    config.heartbeatSec = prev;
+  }
 });
 
 test("makeTitle", () => {

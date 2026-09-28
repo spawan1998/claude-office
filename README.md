@@ -70,12 +70,23 @@ Examples of instructions:
 
 Commands: `/help`, `/status`, `/cancel`, `/new` (fresh session), `/queue`,
 `/clearqueue`, `/verbose on|off` (live feed of every tool call and result,
-default on), `/progress on|off` (Claude's narration between calls, default on).
+default on), `/progress on|off` (Claude's narration between calls, default on),
+`/heartbeat <seconds>|off` ("still working" note after that much silence,
+default 60).
 
 While a task runs you see the same thing the terminal would show: 💬 lines are
 Claude's narration, 🔧 lines are tool calls (tool · Claude's description ·
 command/file), ↳ lines are one-line result summaries. Tool lines are batched
 into one message every ~2.5 s.
+
+Knowing whether it is still alive: your instruction message gets a ⏳ reaction
+when Claude picks it up and ✅ (or ⚠️) when the reply is complete; the reply
+ends with a `done · N turns · Ns` line; and if nothing has been posted for 60 s
+while a run is active you get a `⏳ Still working… N min so far` note with the
+last tool step. WhatsApp's own "typing…" dots are sent as well, but WhatsApp
+only shows them to *other* members of the chat, never to the account that is
+typing (which is you), so colleagues in a group see dots and you see the
+reactions/heartbeat instead.
 
 Approvals look like:
 

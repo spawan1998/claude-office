@@ -38,6 +38,10 @@ export const config = {
   progressUpdates: env("CLAUDE_OFFICE_PROGRESS", "true") === "true",
   /** Send a one-line note for every tool call (noisy; for debugging). */
   verboseTools: env("CLAUDE_OFFICE_VERBOSE_TOOLS", "true") === "true",
+  /** While a run is active and nothing has been posted to the chat for this
+   *  many seconds, post a "⏳ still working" note so a silent stretch is not
+   *  mistaken for a dead connection. 0 disables. */
+  heartbeatSec: Number(env("CLAUDE_OFFICE_HEARTBEAT_SEC", "60")),
   /** How long to wait for an approval / answer before denying (minutes). */
   approvalTimeoutMin: Number(env("CLAUDE_OFFICE_APPROVAL_TIMEOUT_MIN", "60")),
   /** Model override. Empty = whatever your Claude Code settings default to. */

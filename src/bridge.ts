@@ -167,7 +167,9 @@ export class Bridge {
     await this.self(launcherJid).say(`🧵 Task #${id} started → open the group *${subject}* for the live feed and approvals.${slotNote}`);
     const conv = this.groupConversation(groupJid);
     await conv.say(`🧵 *Task #${id}*\n${truncate(instruction, 1500)}\n\nReply here to answer prompts or add follow-ups. /cancel stops it.`);
-    conv.submit(instruction);
+    // The launcher message gets ⏳ now and ✅/⚠️ when the task ends, so the
+    // self-chat doubles as a task board even without opening the group.
+    conv.submit(instruction, {}, m.key);
   }
 
   private setStatus(rec: TaskRecord, status: TaskStatus): void {
