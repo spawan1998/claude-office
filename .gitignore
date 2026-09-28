@@ -1,0 +1,12 @@
+node_modules/
+state/
+logs/
+.env
+workspace/.claude/
+workspace/inbox/
+# The live workspace is personal: standing instructions, journal and scratch files.
+# Copy workspace/CLAUDE.md.example to workspace/CLAUDE.md and adapt it.
+workspace/CLAUDE.md
+workspace/JOURNAL.md
+workspace/*
+!workspace/CLAUDE.md.example
