@@ -4,7 +4,7 @@ import { config } from "./config.ts";
 import { WhatsApp } from "./whatsapp.ts";
 
 async function main(): Promise<void> {
-  console.log(`claude-office starting. workspace=${config.workspace} state=${config.stateDir} parallel=${config.maxParallel} taskGroups=${config.taskGroups}`);
+  console.log(new Date().toISOString().slice(11,19), `claude-office starting. workspace=${config.workspace} state=${config.stateDir} parallel=${config.maxParallel} taskGroups=${config.taskGroups}`);
   const wa = new WhatsApp();
   const bridge = new Bridge(wa);
   let announced = false;
@@ -14,6 +14,7 @@ async function main(): Promise<void> {
   wa.onReady = () => {
     if (announced) return;
     announced = true;
+    bridge.syncSubjects().catch((e) => console.error("subject sync failed", e));
     const jid = wa.selfChatJid;
     if (jid && process.env.CLAUDE_OFFICE_QUIET !== "true") {
       wa.send(jid, `Online. ${config.taskGroups ? `Each instruction here starts its own task group (max ${config.maxParallel} at once).` : "Sequential mode."} Send /help for commands.`).catch(() => {});

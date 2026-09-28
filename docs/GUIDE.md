@@ -254,6 +254,12 @@ In **any chat** (self-chat or a task group):
 | `/heartbeat <seconds>\|off` | "Still working" note after that much silence (default 60 s; `/heartbeat` alone shows the current value). |
 | `/session` | Print the current session id. |
 
+In a **task group** only:
+
+| Command | Effect |
+| --- | --- |
+| `/rename <title>` | Rename the task and its WhatsApp group (the `#id` prefix and ✅/⚠️ mark are kept). Editing `title` in `state/tasks.json` while the service is down has the same effect on the next start. |
+
 ### 4.4 Follow-ups
 
 Typing in a finished task's group resumes that session: "now do the same for

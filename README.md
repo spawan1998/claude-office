@@ -59,6 +59,7 @@ so your chat list doubles as a task board; archive groups you are done with.
 
 Launcher commands: `/tasks` (recent tasks and slots), `/cancel <id>`,
 `/here <instruction>` (run inline in the self-chat, sequential, like v1).
+Inside a task group, `/rename <title>` renames the task and its group.
 Set `CLAUDE_OFFICE_TASK_GROUPS=false` to make inline the default.
 
 Examples of instructions:

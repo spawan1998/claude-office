@@ -169,6 +169,33 @@ test("/here runs inline in the self-chat; /tasks lists; /cancel <id> targets a t
   FakeAgent.pending.shift()!.resolve({ ...ok(""), ok: false });
 });
 
+test("/rename in a task group changes the title and the group subject; a title edited on disk is applied on start", async () => {
+  const { wa, bridge, storeFile } = setup();
+  await bridge.handle(msg(SELF, "help bipasha with her job search"));
+  await tick();
+  FakeAgent.pending.shift()!.resolve(ok("done"));
+  await tick();
+  assert.equal(wa.groups[0].subject, "✅ #1 · help bipasha with her job search");
+  await bridge.handle(msg("g1@g.us", "/rename Bipasha BA Job Hunt"));
+  assert.equal(bridge.tasks[0].title, "Bipasha BA Job Hunt");
+  assert.equal(wa.groups[0].subject, "✅ #1 · Bipasha BA Job Hunt");
+  assert.ok(wa.texts("g1@g.us").some((t) => /Group renamed to \*✅ #1 · Bipasha BA Job Hunt\*/.test(t)));
+  // a member's /rename is treated as an instruction, not a command
+  await bridge.handle({ ...msg("g1@g.us", "[Message from Ujjwal]\n/rename hijack"), fromMe: false });
+  await tick();
+  assert.equal(bridge.tasks[0].title, "Bipasha BA Job Hunt");
+  FakeAgent.pending.shift()?.resolve(ok("ok"));
+  await tick();
+  // title edited in tasks.json while the service was down → applied by syncSubjects on start
+  const data = JSON.parse(fs.readFileSync(storeFile, "utf8"));
+  data.tasks["g1@g.us"].title = "Bipasha · BA job hunt";
+  fs.writeFileSync(storeFile, JSON.stringify(data));
+  const bridge2 = new Bridge(wa, { storeFile, agentFactory: (init) => new FakeAgent(init.onSessionChange, init.sessionId) });
+  await bridge2.syncSubjects();
+  assert.equal(wa.groups[0].subject, "✅ #1 · Bipasha · BA job hunt");
+  assert.equal(JSON.parse(fs.readFileSync(storeFile, "utf8")).tasks["g1@g.us"].appliedSubject, "✅ #1 · Bipasha · BA job hunt");
+});
+
 test("task records survive a restart and a message in an old group resumes its session", async () => {
   const { wa, bridge, storeFile } = setup();
   await bridge.handle(msg(SELF, "first task"));

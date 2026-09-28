@@ -31,7 +31,15 @@ export type TaskRecord = {
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;
+  /** Last group subject we set on WhatsApp; `syncSubject` renames when the wanted one differs. */
+  appliedSubject?: string;
 };
+
+/** Group subject for a task: "#7 · title" while queued/running, "✅ #7 · title" / "⚠️ #7 · title" once finished. */
+export function subjectFor(rec: TaskRecord): string {
+  const mark = rec.status === "done" ? "✅ " : rec.status === "failed" ? "⚠️ " : "";
+  return `${mark}#${rec.id} · ${rec.title}`;
+}
 
 class TaskStore {
   data: { nextId: number; tasks: Record<string, TaskRecord> } = { nextId: 1, tasks: {} };
@@ -79,6 +87,38 @@ export class Bridge {
 
   /** Used by the transport to accept messages from our own task groups. */
   isTaskGroup(jid: string): boolean { return jid in this.store.data.tasks; }
+
+  /**
+   * Bring WhatsApp group subjects in line with the stored records (call once
+   * the socket is open). Lets a title edited in `state/tasks.json` while the
+   * service was down, or a rename that failed offline, take effect on start.
+   */
+  async syncSubjects(): Promise<void> {
+    for (const rec of this.tasks) await this.syncSubject(rec);
+  }
+
+  private async syncSubject(rec: TaskRecord): Promise<void> {
+    const want = subjectFor(rec);
+    if (rec.appliedSubject === want) return;
+    try {
+      await this.wa.renameGroup(rec.groupJid, want);
+      rec.appliedSubject = want;
+      this.store.save();
+    } catch (e) { console.error(`rename of #${rec.id} failed`, (e as Error).message); }
+  }
+
+  /** `/rename <title>` inside a task group: new title for the record and the WhatsApp group. */
+  private async renameTask(rec: TaskRecord, title: string): Promise<boolean> {
+    const conv = this.groupConversation(rec.groupJid);
+    const t = title.trim().slice(0, 80);
+    if (!t) { await conv.say(`Usage: /rename <new title>  (now "${rec.title}")`); return true; }
+    rec.title = t;
+    rec.updatedAt = new Date().toISOString();
+    this.store.save();
+    await this.syncSubject(rec);
+    await conv.say(`✏️ Group renamed to *${subjectFor(rec)}*.`);
+    return true;
+  }
 
   get tasks(): TaskRecord[] { return Object.values(this.store.data.tasks).sort((a, b) => b.id - a.id); }
 
@@ -142,6 +182,7 @@ export class Bridge {
     conv = new Conversation(groupJid, this.wa, agent, this.gate, {
       onStart: () => this.setStatus(rec, "running"),
       onFinish: (r) => this.setStatus(rec, r.ok ? "done" : "failed"),
+      onCommand: (cmd, arg) => (cmd === "rename" ? this.renameTask(rec, arg) : Promise.resolve(false)),
     });
     this.convs.set(groupJid, conv);
     return conv;
@@ -160,7 +201,7 @@ export class Bridge {
       return this.self(launcherJid).handle({ ...m, text: instruction });
     }
     const now = new Date().toISOString();
-    const rec: TaskRecord = { id, title, groupJid, instruction, status: "queued", createdAt: now, updatedAt: now };
+    const rec: TaskRecord = { id, title, groupJid, instruction, status: "queued", createdAt: now, updatedAt: now, appliedSubject: subject };
     this.store.data.tasks[groupJid] = rec;
     this.store.save();
     const slotNote = this.gate.running >= this.gate.limit ? ` It waits for a free slot (${this.gate.running} running).` : "";
@@ -176,10 +217,7 @@ export class Bridge {
     rec.status = status;
     rec.updatedAt = new Date().toISOString();
     this.store.save();
-    if (status === "done" || status === "failed") {
-      const mark = status === "done" ? "✅" : "⚠️";
-      void this.wa.renameGroup(rec.groupJid, `${mark} #${rec.id} · ${rec.title}`).catch((e) => console.error("rename failed", (e as Error).message));
-    }
+    if (status === "done" || status === "failed") void this.syncSubject(rec);
   }
 
   private async listTasks(jid: string): Promise<void> {
