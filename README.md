@@ -13,6 +13,10 @@ WhatsApp (your phone)  ──►  Baileys link (this Mac)  ──►  Claude Age
         └──── replies, progress notes, approval prompts, questions ◄──┘
 ```
 
+**Full guide:** [docs/GUIDE.md](docs/GUIDE.md) — architecture, the message
+flow step by step, setup, daily use, approvals, colleagues in a group,
+configuration reference, operations, security model, troubleshooting.
+
 ## Setup (once)
 
 1. `npm install` (already done).
