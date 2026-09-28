@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   wa.onReady = () => {
     if (announced) return;
     announced = true;
-    bridge.syncSubjects().catch((e) => console.error("subject sync failed", e));
+    bridge.onConnected().catch((e) => console.error("startup reconcile failed", e));
     const jid = wa.selfChatJid;
     if (jid && process.env.CLAUDE_OFFICE_QUIET !== "true") {
       wa.send(jid, `Online. ${config.taskGroups ? `Each instruction here starts its own task group (max ${config.maxParallel} at once).` : "Sequential mode."} Send /help for commands.`).catch(() => {});

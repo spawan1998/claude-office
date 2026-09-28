@@ -1,6 +1,7 @@
 // One chat thread (the self-chat or a task group): its own agent session,
 // instruction queue, pending approval/question slot, and outgoing message
 // pipeline. The Bridge routes inbound messages to the right Conversation.
+import fs from "node:fs";
 import path from "node:path";
 import type { ApprovalAnswer, ApprovalRequest, Prompter, Question, RunOptions, RunResult } from "./agent.ts";
 import { config } from "./config.ts";
@@ -13,6 +14,8 @@ export interface Sender {
   setTyping(jid: string, on: boolean): Promise<void>;
   /** React to a message with an emoji ("" removes the reaction); the chat comes from the key. */
   react(key: MessageRef, emoji: string): Promise<void>;
+  /** Send a file from disk into the chat (as a document, or inline for pictures). */
+  sendFile(jid: string, filePath: string, caption?: string): Promise<void>;
 }
 
 /** What a Conversation needs from the agent (Agent, or a fake in tests). */
@@ -52,6 +55,8 @@ export type ConversationEvents = {
   onFinish?: (result: RunResult) => void;
   /** Unknown slash command; return true if handled. */
   onCommand?: (cmd: string, arg: string) => Promise<boolean>;
+  /** Directory the agent drops files in; everything there is sent into the chat when a run ends. */
+  outboxDir?: string;
 };
 
 type Pending = { resolve: (text: string) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
@@ -70,7 +75,7 @@ export const HELP = `Commands:
 Anything else is an instruction. While a task runs, new messages queue up unless I asked you something, in which case your next message is the answer.
 Your message gets ⏳ when I pick it up and ✅ (or ⚠️) when the reply is complete; the reply itself ends with a "done · N turns · Ns" line.
 Approvals: reply *yes* / *no* / *always*, or tell me what to do instead.
-Files: send a document/photo with a caption and I get both. Without a caption I save it and attach it to your next message.`;
+Files: send a document/photo with a caption and I get both. Without a caption I save it and attach it to your next message. Files I produce for you (PDFs, images, sheets) arrive here as attachments right after my reply.`;
 
 export class Conversation {
   private pending: Pending | null = null;
@@ -224,12 +229,14 @@ export class Conversation {
     let mark = "⚠️";
     try {
       this.events.onStart?.(instruction);
-      const r = await this.agent.run(instruction, prompter, opts);
+      const runOpts: RunOptions = { ...opts, ...(this.events.outboxDir && !opts.readOnly ? { outboxDir: this.events.outboxDir } : {}) };
+      const r = await this.agent.run(instruction, prompter, runOpts);
       const mode = opts.readOnly ? `🔎 read-only reply to ${opts.requester ?? "group member"} · ` : "";
       const footer = `${mode}${r.ok ? "✅ done" : "⚠️ stopped"} · ${r.turns} turns · ${Math.round(r.durationMs / 1000)}s`;
       const body = r.text ? mdToWhatsApp(r.text) : "";
       if (r.ok) mark = "✅";
       await this.say(body ? `${body}\n\n_${footer}_` : `_${footer}_`);
+      await this.flushOutbox();
       this.events.onFinish?.(r);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -240,6 +247,34 @@ export class Conversation {
       await stopLiveness();
       if (ref) void this.wa.react(ref, mark);
     }
+  }
+
+  /**
+   * Send every file the agent left in the outbox directory into the chat,
+   * then move it to `<outbox>/sent/`. Also called on service start so files
+   * produced just before a restart still reach the chat. Returns the count.
+   */
+  async flushOutbox(): Promise<number> {
+    const dir = this.events.outboxDir;
+    if (!dir || !fs.existsSync(dir)) return 0;
+    const names = fs.readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isFile() && !d.name.startsWith("."))
+      .map((d) => d.name)
+      .sort();
+    let n = 0;
+    for (const name of names) {
+      const file = path.join(dir, name);
+      try {
+        await this.wa.sendFile(this.jid, file);
+        const sent = path.join(dir, "sent");
+        fs.mkdirSync(sent, { recursive: true });
+        fs.renameSync(file, path.join(sent, name));
+        n++;
+      } catch (e) {
+        await this.say(`⚠️ Could not send ${name}: ${(e as Error).message}`);
+      }
+    }
+    return n;
   }
 
   /**

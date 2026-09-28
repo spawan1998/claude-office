@@ -166,9 +166,28 @@ export class Bridge {
   private self(jid: string): Conversation {
     if (!this.selfConv || this.selfConv.jid !== jid) {
       const agent = this.agentFactory({ sessionId: undefined, onSessionChange: () => {} });
-      this.selfConv = new Conversation(jid, this.wa, agent, this.gate);
+      this.selfConv = new Conversation(jid, this.wa, agent, this.gate, { outboxDir: this.outboxDir("self") });
     }
     return this.selfConv;
+  }
+
+  /** `<workspace>/outbox/<task id | self>/`: files the agent drops there are sent into that chat. */
+  private outboxDir(key: string): string { return path.join(config.workspace, "outbox", key); }
+
+  /** Deliver files left in any outbox (e.g. produced just before a restart). Call once connected. */
+  async flushOutboxes(): Promise<void> {
+    const hasFiles = (dir: string) => fs.existsSync(dir) && fs.readdirSync(dir, { withFileTypes: true }).some((d) => d.isFile() && !d.name.startsWith("."));
+    for (const rec of this.tasks) {
+      if (hasFiles(this.outboxDir(String(rec.id)))) await this.groupConversation(rec.groupJid).flushOutbox();
+    }
+    const selfJid = this.wa.selfChatJid;
+    if (selfJid && hasFiles(this.outboxDir("self"))) await this.self(selfJid).flushOutbox();
+  }
+
+  /** Startup reconciliation once the WhatsApp socket is open. */
+  async onConnected(): Promise<void> {
+    await this.syncSubjects();
+    await this.flushOutboxes();
   }
 
   private groupConversation(groupJid: string): Conversation {
@@ -183,6 +202,7 @@ export class Bridge {
       onStart: () => this.setStatus(rec, "running"),
       onFinish: (r) => this.setStatus(rec, r.ok ? "done" : "failed"),
       onCommand: (cmd, arg) => (cmd === "rename" ? this.renameTask(rec, arg) : Promise.resolve(false)),
+      outboxDir: this.outboxDir(String(rec.id)),
     });
     this.convs.set(groupJid, conv);
     return conv;

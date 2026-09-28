@@ -12,8 +12,11 @@ import {
 import { config } from "./config.ts";
 import { classify, readOnlyViolation } from "./policy.ts";
 
-/** Per-run options. `readOnly` is used for requests from other group members. */
-export type RunOptions = { readOnly?: boolean; requester?: string };
+/** Per-run options. `readOnly` is used for requests from other group members; `outboxDir` is where files for the chat go. */
+export type RunOptions = { readOnly?: boolean; requester?: string; outboxDir?: string };
+
+const OUTBOX_APPEND = (dir: string) => `
+- Sending files to the chat: copy any file the user should receive (PDF, image, spreadsheet, document …) into ${dir}/ and mention it in your reply. Everything left there is delivered into the chat as an attachment right after your reply; never paste file contents as text instead.`;
 
 const READ_ONLY_APPEND = (who: string) => `
 READ-ONLY MODE. This request comes from ${who}, a member of the task group, not from the owner.
@@ -186,7 +189,7 @@ export class Agent {
         abortController: abort,
         maxTurns: config.maxTurns,
         ...(config.model ? { model: config.model } : {}),
-        systemPrompt: { type: "preset", preset: "claude_code", append: SYSTEM_APPEND + (readOnly ? READ_ONLY_APPEND(requester) : "") },
+        systemPrompt: { type: "preset", preset: "claude_code", append: SYSTEM_APPEND + (runOpts.outboxDir && !readOnly ? OUTBOX_APPEND(runOpts.outboxDir) : "") + (readOnly ? READ_ONLY_APPEND(requester) : "") },
         additionalDirectories: [path.dirname(config.root)],
         ...(readOnly
           ? {

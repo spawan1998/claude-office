@@ -68,6 +68,11 @@ Files sent in the chat land in `inbox/` inside this directory; the instruction
 carries the path as `[Attachment saved at: …]`. Work on that copy (or copy it
 where it belongs).
 
+To send a file back into the chat (a PDF you built, a screenshot, a
+spreadsheet), copy it into the outbox directory named in your system prompt
+(`outbox/<task id>/` inside this directory). Everything there is delivered as
+an attachment right after your reply, so mention it in the reply.
+
 ## Journal
 
 After finishing any non-trivial task, append 2–4 lines to `JOURNAL.md` in this

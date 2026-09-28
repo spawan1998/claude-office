@@ -366,6 +366,14 @@ Send a document, photo, video or voice note in the self-chat or a task group.
   to do with it.` and the path is attached to your next message.
 - Downloads that fail produce a note asking you to re-send.
 
+**Files from Claude to you.** Each chat has an outbox: `workspace/outbox/<task
+id>/` for a task group, `workspace/outbox/self/` for the self-chat. Claude is
+told about it in its system prompt; any file it copies there (a PDF it built,
+a screenshot, a spreadsheet) is sent into the chat as an attachment right after
+its reply (pictures inline, everything else as a document) and then moved to
+`…/sent/`. Files produced just before a restart are delivered when the service
+reconnects. Read-only runs for other group members have no outbox.
+
 ---
 
 ## 7. Other people in a task group
@@ -436,6 +444,7 @@ workspace/CLAUDE.md.example   template for the agent's standing instructions
 workspace/CLAUDE.md  your copy (git-ignored)
 workspace/JOURNAL.md the agent's running log (git-ignored)
 workspace/inbox/     downloaded attachments (git-ignored)
+workspace/outbox/    files Claude sends back, per task id (git-ignored)
 state/wa-auth/       WhatsApp session keys  (git-ignored, secret)
 state/session.json   session id of the inline self-chat
 state/tasks.json     task groups → session ids, status, titles

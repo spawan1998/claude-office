@@ -18,6 +18,8 @@ class FakeWA implements Transport {
   reactions: { id: string; emoji: string }[] = [];
   async setTyping() { /* noop */ }
   async react(key: { id: string }, emoji: string) { this.reactions.push({ id: key.id, emoji }); }
+  files: { jid: string; file: string; caption?: string }[] = [];
+  async sendFile(jid: string, file: string, caption?: string) { this.files.push({ jid, file, caption }); }
   async createGroup(subject: string) { const jid = `g${this.groups.length + 1}@g.us`; this.groups.push({ jid, subject }); return jid; }
   async renameGroup(jid: string, subject: string) { const g = this.groups.find((x) => x.jid === jid); if (g) g.subject = subject; }
   texts(jid: string) { return this.sent.filter((s) => s.jid === jid).map((s) => s.text); }
@@ -55,7 +57,9 @@ const msg = (chatJid: string, text: string) => {
 function setup(limit = 3) {
   const wa = new FakeWA();
   const agents: FakeAgent[] = [];
-  const storeFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "co-test-")), "tasks.json");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "co-test-"));
+  const storeFile = path.join(dir, "tasks.json");
+  config.workspace = path.join(dir, "workspace");
   config.maxParallel = limit;
   config.taskGroups = true;
   FakeAgent.pending = [];
@@ -194,6 +198,35 @@ test("/rename in a task group changes the title and the group subject; a title e
   await bridge2.syncSubjects();
   assert.equal(wa.groups[0].subject, "✅ #1 · Bipasha · BA job hunt");
   assert.equal(JSON.parse(fs.readFileSync(storeFile, "utf8")).tasks["g1@g.us"].appliedSubject, "✅ #1 · Bipasha · BA job hunt");
+});
+
+test("files the agent leaves in outbox/<task id>/ are sent to the group after the run, or on start after a restart", async () => {
+  const { wa, bridge, agents, storeFile } = setup();
+  await bridge.handle(msg(SELF, "make me a pdf"));
+  await tick();
+  const outbox = path.join(config.workspace, "outbox", "1");
+  const groupAgent = agents.find((a) => a.runs.length)!;
+  assert.equal(groupAgent.lastOpts?.outboxDir, outbox, "agent is told where the outbox is");
+  fs.mkdirSync(outbox, { recursive: true });
+  fs.writeFileSync(path.join(outbox, "report.pdf"), "%PDF-1.4");
+  fs.writeFileSync(path.join(outbox, ".DS_Store"), "");
+  FakeAgent.pending.shift()!.resolve(ok("here is your pdf"));
+  await tick();
+  assert.deepEqual(wa.files.map((f) => [f.jid, path.basename(f.file)]), [["g1@g.us", "report.pdf"]]);
+  assert.ok(fs.existsSync(path.join(outbox, "sent", "report.pdf")), "moved to sent/");
+  assert.ok(!fs.existsSync(path.join(outbox, "report.pdf")));
+  // a member's read-only run gets no outbox
+  await bridge.handle({ ...msg("g1@g.us", "[Message from Ujjwal]\nand a csv?"), fromMe: false });
+  await tick();
+  assert.equal(groupAgent.lastOpts?.outboxDir, undefined);
+  FakeAgent.pending.shift()!.resolve(ok("no"));
+  await tick();
+  // produced just before a restart → delivered by onConnected() of the new process
+  fs.writeFileSync(path.join(outbox, "late.xlsx"), "x");
+  const bridge2 = new Bridge(wa, { storeFile, agentFactory: (init) => new FakeAgent(init.onSessionChange, init.sessionId) });
+  await bridge2.onConnected();
+  assert.deepEqual(wa.files.map((f) => path.basename(f.file)), ["report.pdf", "late.xlsx"]);
+  assert.ok(fs.existsSync(path.join(outbox, "sent", "late.xlsx")));
 });
 
 test("task records survive a restart and a message in an old group resumes its session", async () => {
